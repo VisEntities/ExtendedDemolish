@@ -1,5 +1,5 @@
-﻿/*
- * Copyright (C) 2024 Game4Freak.io
+/*
+ * Copyright (C) 2026 Game4Freak.io
  * This mod is provided under the Game4Freak EULA.
  * Full legal terms can be found at https://game4freak.io/eula/
  */
@@ -10,26 +10,35 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Extended Demolish", "VisEntities", "1.0.0")]
-    [Description("Lets you change how long players can demolish their own structures.")]
-    public class ExtendedDemolish : RustPlugin
+    [Info("Extended Hammer", "VisEntities", "2.0.0")]
+    [Description("Extends the hammer's demolish and rotation timers for placed structures.")]
+    public class ExtendedHammer : RustPlugin
     {
         #region Fields
 
-        private static ExtendedDemolish _plugin;
+        private static ExtendedHammer _plugin;
         private static Configuration _config;
 
         #endregion Fields
 
         #region Configuration
 
+        private class ProfileSettings
+        {
+            [JsonProperty("Demolish Time (Seconds)")]
+            public int DemolishTime { get; set; }
+
+            [JsonProperty("Rotation Time (Seconds)")]
+            public int RotationTime { get; set; }
+        }
+
         private class Configuration
         {
             [JsonProperty("Version")]
             public string Version { get; set; }
 
-            [JsonProperty("Demolish Times")]
-            public Dictionary<string, int> DemolishTimes { get; set; }
+            [JsonProperty("Permission Profiles")]
+            public Dictionary<string, ProfileSettings> PermissionProfiles { get; set; }
         }
 
         protected override void LoadConfig()
@@ -62,6 +71,9 @@ namespace Oxide.Plugins
             if (string.Compare(_config.Version, "1.0.0") < 0)
                 _config = defaultConfig;
 
+            if (string.Compare(_config.Version, "2.0.0") < 0)
+                _config = defaultConfig;
+
             PrintWarning("Config update complete! Updated from version " + _config.Version + " to " + Version.ToString());
             _config.Version = Version.ToString();
         }
@@ -71,10 +83,18 @@ namespace Oxide.Plugins
             return new Configuration
             {
                 Version = Version.ToString(),
-                DemolishTimes = new Dictionary<string, int>
+                PermissionProfiles = new Dictionary<string, ProfileSettings>
                 {
-                    ["default"] = 600,
-                    ["vip"] = 1200
+                    ["default"] = new ProfileSettings
+                    {
+                        DemolishTime = 600,
+                        RotationTime = 600
+                    },
+                    ["vip"] = new ProfileSettings
+                    {
+                        DemolishTime = 1200,
+                        RotationTime = 1200
+                    }
                 }
             };
         }
@@ -86,8 +106,7 @@ namespace Oxide.Plugins
         private void Init()
         {
             _plugin = this;
-            BuildPermissionsFromConfig();
-            PermissionUtil.RegisterPermissions();
+            PermissionUtil.RegisterPermissions(_config.PermissionProfiles.Keys);
         }
 
         private void Unload()
@@ -113,41 +132,36 @@ namespace Oxide.Plugins
             if (stabilityEntity == null)
                 return;
 
-            float demolishTime = GetDemolishTimeForPlayer(player);
+            ProfileSettings profile = GetProfileForPlayer(player);
 
             stabilityEntity.CancelInvoke(stabilityEntity.StopBeingDemolishable);
-            stabilityEntity.Invoke(stabilityEntity.StopBeingDemolishable, demolishTime);
+            stabilityEntity.Invoke(stabilityEntity.StopBeingDemolishable, profile.DemolishTime);
+
+            BuildingBlock buildingBlock = stabilityEntity as BuildingBlock;
+            if (buildingBlock != null)
+            {
+                buildingBlock.CancelInvoke(buildingBlock.StopBeingRotatable);
+                buildingBlock.Invoke(buildingBlock.StopBeingRotatable, profile.RotationTime);
+            }
         }
 
         #endregion Oxide Hooks
 
         #region Helper Functions
 
-        private float GetDemolishTimeForPlayer(BasePlayer player)
+        private ProfileSettings GetProfileForPlayer(BasePlayer player)
         {
-            float demolishTime = StabilityEntity.demolish_seconds;
-
-            foreach (var kvp in _config.DemolishTimes)
+            foreach (var kvp in _config.PermissionProfiles)
             {
-                string suffix = kvp.Key;
-                string fullPerm = PermissionUtil.ConstructPermission(suffix);
-                if (permission.UserHasPermission(player.UserIDString, fullPerm))
-                {
-                    demolishTime = kvp.Value;
-                    break;
-                }
+                if (PermissionUtil.HasPermission(player, kvp.Key))
+                    return kvp.Value;
             }
 
-            return demolishTime;
-        }
-
-        private void BuildPermissionsFromConfig()
-        {
-            foreach (var kvp in _config.DemolishTimes)
+            return new ProfileSettings
             {
-                string permission = PermissionUtil.ConstructPermission(kvp.Key);
-                PermissionUtil.AddPermission(permission);
-            }
+                DemolishTime = (int)StabilityEntity.demolish_seconds,
+                RotationTime = 600
+            };
         }
 
         #endregion Helper Functions
@@ -156,33 +170,22 @@ namespace Oxide.Plugins
 
         private static class PermissionUtil
         {
-            private static readonly List<string> _permissions = new List<string>
+            public static void RegisterPermissions(IEnumerable<string> profileSuffixes)
             {
-                
-            };
-
-            public static void RegisterPermissions()
-            {
-                foreach (var permission in _permissions)
+                foreach (string suffix in profileSuffixes)
                 {
-                    _plugin.permission.RegisterPermission(permission, _plugin);
+                    _plugin.permission.RegisterPermission(GetPermission(suffix), _plugin);
                 }
             }
 
-            public static bool HasPermission(BasePlayer player, string permissionName)
+            public static bool HasPermission(BasePlayer player, string profileSuffix)
             {
-                return _plugin.permission.UserHasPermission(player.UserIDString, permissionName);
+                return _plugin.permission.UserHasPermission(player.UserIDString, GetPermission(profileSuffix));
             }
 
-            public static string ConstructPermission(string suffix)
+            private static string GetPermission(string suffix)
             {
-                return string.Join(".", nameof(ExtendedDemolish), suffix).ToLower();
-            }
-
-            public static void AddPermission(string permission)
-            {
-                if (!_permissions.Contains(permission))
-                    _permissions.Add(permission);
+                return nameof(ExtendedHammer).ToLower() + "." + suffix;
             }
         }
 
